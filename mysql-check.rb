@@ -127,15 +127,50 @@ class TableDescription
     @has_id && @has_update
   end
   # true if the structure of the given shadow table matches ours
-  def check_unchanged( shadow_desc )
+  def unchanged?( shadow_desc )
     # the same fields must be present and their types must match
     @fields.eql?( shadow_desc.fields )
   end
-  # true if the table has a matching field
-  def same_field( name, type )
-    @fields.fetch( name, nil) == type
+  # return a hash of fields that we have that are not in the other description
+  def extra_fields( other_desc )
+    @fields.select{ |name, type| !(other_desc.fields.has_key?( name ))}
+  end
+  # return a hash of existing fields that have type modifications
+  def modified_fields( other_desc )
+    @fields.select{ |name, type| (other_desc.fields.has_key?( name )) && !(other_desc.fields.fetch( name ) == type )}
+  end
+  # return the create insert trigger query string for this table
+  def insert_trigger_sql
+    trigger_body( "insert" )
+  end
+  # return the create update trigger query string for this table
+  def update_trigger_sql
+    trigger_body( "update" )
+  end
+  # common part of trigger body
+  def trigger_body( event )
+    trigger_statement  = "CREATE TRIGGER #{DATABASE_NAME}.#{base_name}_#{event} "
+    trigger_statement += "AFTER #{event.upcase} ON #{DATABASE_NAME}.#{base_name} FOR EACH ROW "
+    trigger_statement += "INSERT INTO #{DATABASE_NAME}.#{shadow_name} ("
+    trigger_statement += field_list + " ) VALUES ("
+    trigger_statement += new_list + " )"
+    return trigger_statement
+
+  end
+  # return the drop insert trigger query string for this table
+  def drop_insert_sql
+    drop_trigger_sql( "insert" )
+  end
+  # return the drop update trigger query string for this table
+  def drop_update_sql
+    drop_trigger_sql( "update" )
+  end
+  # common drop trigger portion
+  def drop_trigger_sql( event )
+    "DROP TRIGGER IF EXISTS #{DATABASE_NAME}.#{base_name}_#{event}"
   end
 end
+# this is the main portion of the script
   begin
     # connect to the MySQL server
     #           host, user, password, database
@@ -169,9 +204,40 @@ end
         if ix_sh
           # a shadow table exists now, see if it needs to be revised
           log_it " table #{tab_desc.table_name} has shadow at #{ix_sh}, #{$tables[ix_sh].table_name}"
-          need_update = ! tab_desc.check_unchanged( $tables[ix_sh] )
+          need_update = ! ( tab_desc.unchanged?( $tables[ix_sh] ) )
           if need_update
             log_it " shadow table #{$tables[ix_sh].table_name} needs an update"
+            regenerate_triggers = false
+            # add new fields
+            new_fields = tab_desc.extra_fields( $tables[ix_sh] )
+            if ! new_fields.empty?
+              puts "add"
+              p new_fields
+              regenerate_triggers = true
+            end
+            # drop removed fields
+            drop_fields = $tables[ix_sh].extra_fields( tab_desc )
+            if ! drop_fields.empty?
+              puts "drop"
+              p drop_fields
+              regenerate_triggers = true
+            end
+            # alter modified types
+            modify_fields = tab_desc.modified_fields( $tables[ix_sh] )
+            if ! modify_fields.empty?
+              puts "modify"
+              p modify_fields
+            end
+            # recreate triggers
+            if regenerate_triggers
+              puts "regenerate triggers"
+
+ #             $dbh.query( tab_desc.drop_insert_sql )
+ #             $dbh.query( tab_desc.insert_trigger_sql )
+
+ #             $dbh.query( tab_desc.drop_update_sql )
+ #             $dbh.query( tab_desc.update_trigger_sql )
+            end
           end
         else
           # there is no shadow, create it now
@@ -180,21 +246,14 @@ end
           create_statement += tab_desc.create_fields + " )"
 #          puts create_statement
           $dbh.query( create_statement )
+
           # todo - we might want to create an index someday
-          insert_statement  = "CREATE TRIGGER #{DATABASE_NAME}.#{tab_desc.base_name}_insert "
-          insert_statement += "AFTER INSERT ON #{DATABASE_NAME}.#{tab_desc.base_name} FOR EACH ROW "
-          insert_statement += "INSERT INTO #{DATABASE_NAME}.#{tab_desc.shadow_name} ("
-          insert_statement += tab_desc.field_list + " ) VALUES ("
-          insert_statement += tab_desc.new_list + " )"
-#          puts insert_statement
-          $dbh.query( insert_statement )
-          update_statement  = "CREATE TRIGGER #{DATABASE_NAME}.#{tab_desc.base_name}_update "
-          update_statement += "AFTER UPDATE ON #{DATABASE_NAME}.#{tab_desc.base_name} FOR EACH ROW "
-          update_statement += "INSERT INTO #{DATABASE_NAME}.#{tab_desc.shadow_name} ("
-          update_statement += tab_desc.field_list + " ) VALUES ("
-          update_statement += tab_desc.new_list + " )"
-#          puts update_statement
-          $dbh.query( update_statement )
+
+          $dbh.query( tab_desc.drop_insert_sql )
+          $dbh.query( tab_desc.insert_trigger_sql )
+          
+          $dbh.query( tab_desc.drop_update_sql )
+          $dbh.query( tab_desc.update_trigger_sql )
         end
       else
         if tab_desc.shadow?
