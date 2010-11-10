@@ -170,6 +170,14 @@ class TableDescription
     "DROP TRIGGER IF EXISTS #{DATABASE_NAME}.#{base_name}_#{event}"
   end
 end
+# common trigger generation mechanism
+def generate_triggers( tab_desc )
+  $dbh.query( tab_desc.drop_insert_sql )
+  $dbh.query( tab_desc.insert_trigger_sql )
+
+  $dbh.query( tab_desc.drop_update_sql )
+  $dbh.query( tab_desc.update_trigger_sql )
+end
 # this is the main portion of the script
   begin
     # connect to the MySQL server
@@ -214,6 +222,12 @@ end
               puts "add"
               p new_fields
               regenerate_triggers = true
+              add_names = new_fields.collect{|item| " ADD COLUMN #{item[0]} #{item[1]},"}
+              add_list = add_names.join
+              add_list.chop!
+              add_sql = "ALTER TABLE #{DATABASE_NAME}.#{tab_desc.shadow_name}#{add_list}"
+              puts add_sql
+              $dbh.query( add_sql )
             end
             # drop removed fields
             drop_fields = $tables[ix_sh].extra_fields( tab_desc )
@@ -221,22 +235,29 @@ end
               puts "drop"
               p drop_fields
               regenerate_triggers = true
+              drop_names = drop_fields.collect{|item| " DROP COLUMN #{item[0]},"}
+              drop_list = drop_names.join
+              drop_list.chop!
+              drop_sql = "ALTER TABLE #{DATABASE_NAME}.#{tab_desc.shadow_name}#{drop_list}"
+              puts drop_sql
+              $dbh.query( drop_sql )
             end
             # alter modified types
             modify_fields = tab_desc.modified_fields( $tables[ix_sh] )
             if ! modify_fields.empty?
               puts "modify"
               p modify_fields
+              modify_names = new_fields.collect{|item| " MODIFY COLUMN #{item[0]} #{item[1]},"}
+              modify_list = modify_names.join
+              modify_list.chop!
+              modify_sql = "ALTER TABLE #{DATABASE_NAME}.#{tab_desc.shadow_name}#{modify_list}"
+              puts modify_sql
+              $dbh.query( modify_sql )
             end
             # recreate triggers
             if regenerate_triggers
               puts "regenerate triggers"
-
- #             $dbh.query( tab_desc.drop_insert_sql )
- #             $dbh.query( tab_desc.insert_trigger_sql )
-
- #             $dbh.query( tab_desc.drop_update_sql )
- #             $dbh.query( tab_desc.update_trigger_sql )
+              generate_triggers( tab_desc )
             end
           end
         else
@@ -249,11 +270,7 @@ end
 
           # todo - we might want to create an index someday
 
-          $dbh.query( tab_desc.drop_insert_sql )
-          $dbh.query( tab_desc.insert_trigger_sql )
-          
-          $dbh.query( tab_desc.drop_update_sql )
-          $dbh.query( tab_desc.update_trigger_sql )
+          generate_triggers( tab_desc )
         end
       else
         if tab_desc.shadow?
