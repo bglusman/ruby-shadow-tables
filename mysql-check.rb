@@ -140,7 +140,8 @@ class TableDescription
       @shadow_name = nil
     end
     @desc.free
-  end
+  end # done initializing the description
+  #
   # true if this is a shadow table
   def shadow?
     ! @shadow_match.nil?
@@ -214,6 +215,13 @@ class TableDescription
     return "ALTER TABLE #{DATABASE_NAME}.#{shadow_name}#{field_text}"
   end
   # end of alter table section
+  #
+  # -- create table section
+  # generate a create table command for the shadow table of this table
+  def create_table_sql()
+    "CREATE TABLE #{DATABASE_NAME}.#{shadow_name} (" + create_fields + " )"
+  end
+  # end of create table section
 end
 # end of the table description class
 #
@@ -243,6 +251,8 @@ end
     end
     #
     # helper procedures the contain the column syntax needed for alter table operations
+    # item is a field hash entry supplied as an array,
+    # item[0] is the key (the field name), item[1] is the value (the field type)
     add_syntax = Proc.new {|item| " ADD COLUMN #{item[0]} #{item[1]},"}
     drop_syntax = Proc.new {|item| " DROP COLUMN #{item[0]},"}
     modify_syntax = Proc.new {|item| " MODIFY COLUMN #{item[0]} #{item[1]},"}
@@ -251,6 +261,7 @@ end
     # - do shadow creation - create shadow tables that do not exist now
     $tables.each do |tab_desc|
       if tab_desc.can_shadow?
+        # This table should have a shadow table.
         # find the index of the corresponding shadow table if it exists
         ix_sh = $tables.index{ |item| item.table_name == tab_desc.shadow_name }
         if ix_sh
@@ -261,7 +272,7 @@ end
           if need_update
             log_it " shadow table #{$tables[ix_sh].table_name} needs an update"
             # it seems simpler and safer to treat add, drop, and modify as separate problems
-            # in most cases only one will be needed in any update
+            # since in most cases only one type will be needed for any table
             # add new fields
             new_fields = tab_desc.extra_fields( $tables[ix_sh] )
             if ! new_fields.empty?
@@ -285,12 +296,11 @@ end
               log_it "regenerate triggers"
               generate_triggers( tab_desc )
             end
-          end
+          end # end of need an update of the shadow table
         else
           # there is no shadow for this table, create it now
           log_it " create #{tab_desc.shadow_name}"
-          create_statement  = "CREATE TABLE #{DATABASE_NAME}.#{tab_desc.shadow_name} ("
-          create_statement += tab_desc.create_fields + " )"
+          create_statement = tab_desc.create_table_sql()
           $dbh.query( create_statement )
 
           # todo - we might want to create an index someday
