@@ -7,7 +7,7 @@
   require "logger"
   require "optparse"      # more ruby-ish than getoptlong
 
-  # For now the focus is on developing tools for use with the MySql database.
+  # For now the focus is on developing shadow table tools for use with the MySql database.
   # The sql generated is MySql-specific.
   # Therefore we use the MySql driver, and skip the DBI abstraction.
 
@@ -236,6 +236,13 @@ def generate_triggers( tab_desc )
 end
 # this is the main portion of the script
   begin
+    # process the command line options
+    # we can accept
+    # - database connection info
+    # - logging info and verbosity
+    # - a test mode switch, that is show what we would do
+    # - a different shadow table name pattern
+    #
     # connect to the MySQL server
     #           host, user, password, database
     # todo - read database and other configuration from an external file or command line
