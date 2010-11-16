@@ -21,6 +21,7 @@
   UPDATE_NAME = "updated_at"
 
   # The database we are working in
+  # This is all we need to change to work on another database
   DATABASE_NAME = "enjyn_qa"
 
 # logging interface
@@ -36,31 +37,40 @@ end
 # It can tell if a table is a shadow or if it can be shadowed.
 # It can supply formatted strings describing the fields in the form needed
 # for creation of the table or related triggers.
+# It can be used to find added, dropped, or modified fields.
 class TableDescription
   # the name of this table
   attr_reader :table_name
-  # the name of the table being shadowed if this is a shadow table
+
+  # the name of the table being shadowed if this is a shadow table else the table name
   attr_reader :base_name
+
   # the name of the shadow table if this table can be shadowed
   attr_reader :shadow_name
+
   # the number of fields in this table
   attr_reader :column_count
+
   # a description of all the fields in the table in create table form
   attr_reader :create_fields
+
   # trigger insert source - a list of all the field names
   attr_reader :field_list
+
   # trigger values source - a list of all the field names with NEW prepended
   attr_reader :new_list
-  # a hash of all the field names with the type as value
+
+  # a hash of all the field name as the key and the field type as the value
   attr_reader :fields
 
   # get and analyze the description of this table
   def initialize( table_name )
     @table_name = table_name
+    # see if this table name matches the shadow table name pattern
     @shadow_match = SHADOW_PATTERN.match( table_name )
     if @shadow_match
       # then this is a shadow table
-      # base_name is name of the table the shadow is following
+      # base_name is name of the table the shadow table is following
       @base_name = @shadow_match[1]
       # shadow name is the name of the shadow table - there is none for a shadow
       @shadow_name = nil
@@ -68,20 +78,25 @@ class TableDescription
       @base_name = table_name
       # this is not a shadow table
     end
-    # - get the description of this table
+    # - get the description of this table from the database
     @desc = $dbh.query( "describe #{table_name}" )
     if @desc.nil?
       @column_count = 0
+      # somehow this table has no columns
     else
       @column_count =  @desc.num_rows
     end
     # the 6 description keys available are:
-    #  Field - the name of the field
-    #  Type - the field data type, and (size) when needed
-    #  Null - whether NULL is allowed as a value
+    #  Field   - value is the name of the field
+    #  Type    - value is the field data type, and (size) when used
+    #  Null    - whether NULL is allowed as a field value
+    #           - for shadow tables we do not need a non-null constraint
     #  Default - the default value when a value is not given
-    #  Key - information about use of the field in an index
-    #  Extra - other properties, e.g. autoincrement
+    #           - for shadow tables we do not need a default value
+    #  Key     - information about use of the field in an index
+    #           - for shadow tables we do not need a primary key for now
+    #  Extra   - other properties, e.g. autoincrement
+    #           - for shadow tables we do not need autoincrement fields
     #
     # - analyze the properties of this table
     #   we only get one scan of desc, so do it all now
@@ -93,22 +108,30 @@ class TableDescription
     @fields = {}
     @desc.each_hash do |info|
       if !shadow?
+        # for a non-shadow table we need to know if it can have a shadow
+        # to have a shadow it must have these two fields
         case info["Field"]
           when ID_NAME
             @has_id = true
           when UPDATE_NAME
             @has_update = true
         end
+        # these strings are only used if this is not a shadow table
+        # it seems easier to create them here than to derive them later
+        @create_fields += " #{info["Field"]} #{info["Type"]},"
+        @field_list += " #{info["Field"]},"
+        @new_list += " new.#{info["Field"]},"
       end
-      @create_fields += " #{info["Field"]} #{info["Type"]},"
-      @field_list += " #{info["Field"]},"
-      @new_list += " new.#{info["Field"]},"
+      # we need the fields hash for all tables
       @fields[info["Field"]] = info["Type"]
     end
-    # remove the final commas
-    @create_fields.chop!
-    @field_list.chop!
-    @new_list.chop!
+    if ! @create_fields.empty?
+      # if this is non-empty then the others are too
+      # remove the final commas
+      @create_fields.chop!
+      @field_list.chop!
+      @new_list.chop!
+    end
     # we now know enough to create the shadow name (or not)
     if can_shadow?
       @shadow_name = @base_name + SHADOW_SUFFIX
@@ -132,22 +155,26 @@ class TableDescription
     @fields.eql?( shadow_desc.fields )
   end
   # return a hash of fields that we have that are not in the other description
+  # we use this to detect both added and dropped fields
   def extra_fields( other_desc )
     @fields.select{ |name, type| !(other_desc.fields.has_key?( name ))}
   end
-  # return a hash of existing fields that have type modifications
+  # return a hash of existing fields that have different types than the other table
+  # the types in the other table (the shadow table) need to be updated
   def modified_fields( other_desc )
     @fields.select{ |name, type| (other_desc.fields.has_key?( name )) && !(other_desc.fields.fetch( name ) == type )}
   end
-  # return the create insert trigger query string for this table
+  #
+  # -- trigger creation section
+  # return the create insert trigger query string for this non-shadow table
   def insert_trigger_sql
     trigger_body( "insert" )
   end
-  # return the create update trigger query string for this table
+  # return the create update trigger query string for this non-shadow table
   def update_trigger_sql
     trigger_body( "update" )
   end
-  # common part of trigger body
+  # common part of the create trigger body
   def trigger_body( event )
     trigger_statement  = "CREATE TRIGGER #{DATABASE_NAME}.#{base_name}_#{event} "
     trigger_statement += "AFTER #{event.upcase} ON #{DATABASE_NAME}.#{base_name} FOR EACH ROW "
@@ -155,22 +182,43 @@ class TableDescription
     trigger_statement += field_list + " ) VALUES ("
     trigger_statement += new_list + " )"
     return trigger_statement
-
   end
-  # return the drop insert trigger query string for this table
+  # end of trigger creation section
+  #
+  # -- drop trigger query section
+  # return the drop insert trigger query string for this non-shadow table
   def drop_insert_sql
     drop_trigger_sql( "insert" )
   end
-  # return the drop update trigger query string for this table
+  # return the drop update trigger query string for this non-shadow table
   def drop_update_sql
     drop_trigger_sql( "update" )
   end
   # common drop trigger portion
+  # note this query does nothing and does not throw an error if the trigger does not exist
   def drop_trigger_sql( event )
     "DROP TRIGGER IF EXISTS #{DATABASE_NAME}.#{base_name}_#{event}"
   end
+  # end of drop trigger section
+  #
+  #-- alter table section
+  # generate an alter table command on the shadow table of this table
+  # with the field syntax specified by list_proc
+  # based on the fields in the hash - field name as key, field type as value
+  def alter_table_sql( field_hash, &list_proc )
+    # make a list of all the fields to include, using the appropriate syntax
+    field_list = field_hash.collect( &list_proc )
+    field_text = field_list.join
+    # remove the final comma
+    field_text.chop!
+    return "ALTER TABLE #{DATABASE_NAME}.#{shadow_name}#{field_text}"
+  end
+  # end of alter table section
 end
+# end of the table description class
+#
 # common trigger generation mechanism
+# only used for non-shadow tables
 def generate_triggers( tab_desc )
   $dbh.query( tab_desc.drop_insert_sql )
   $dbh.query( tab_desc.insert_trigger_sql )
@@ -185,94 +233,73 @@ end
     # todo - read database and other configuration from an external file or command line
     $dbh = Mysql.real_connect("localhost", "root", "3njyn42", DATABASE_NAME )
     # get server version string and display it
-#    log_it "Server version: " + $dbh.get_server_info
+    log_it "Server version: " + $dbh.get_server_info
     $tables = []
     # get the names of all tables in this database
     tablist = $dbh.list_tables
+    # build the descriptions of all the tables
     tablist.each do |table|
- #     log_it table
-      next_table = TableDescription.new( table )
-=begin
-      if next_table.shadow?
-        log_it "  shadow of " + next_table.base_name
-      end
-=end
-
- #     if next_table.can_shadow?
- #       log_it "  can shadow this table"
- #     end
-      $tables << next_table
+      $tables << TableDescription.new( table )
     end
     #
+    # helper procedures the contain the column syntax needed for alter table operations
+    add_syntax = Proc.new {|item| " ADD COLUMN #{item[0]} #{item[1]},"}
+    drop_syntax = Proc.new {|item| " DROP COLUMN #{item[0]},"}
+    modify_syntax = Proc.new {|item| " MODIFY COLUMN #{item[0]} #{item[1]},"}
+
     # - do shadow maintenance - update existing shadow tables that do not match base table
     # - do shadow creation - create shadow tables that do not exist now
     $tables.each do |tab_desc|
       if tab_desc.can_shadow?
+        # find the index of the corresponding shadow table if it exists
         ix_sh = $tables.index{ |item| item.table_name == tab_desc.shadow_name }
         if ix_sh
           # a shadow table exists now, see if it needs to be revised
           log_it " table #{tab_desc.table_name} has shadow at #{ix_sh}, #{$tables[ix_sh].table_name}"
+          # we need an update if the shadow table description does not match
           need_update = ! ( tab_desc.unchanged?( $tables[ix_sh] ) )
           if need_update
             log_it " shadow table #{$tables[ix_sh].table_name} needs an update"
-            regenerate_triggers = false
+            # it seems simpler and safer to treat add, drop, and modify as separate problems
+            # in most cases only one will be needed in any update
             # add new fields
             new_fields = tab_desc.extra_fields( $tables[ix_sh] )
             if ! new_fields.empty?
-              puts "add"
-              p new_fields
-              regenerate_triggers = true
-              add_names = new_fields.collect{|item| " ADD COLUMN #{item[0]} #{item[1]},"}
-              add_list = add_names.join
-              add_list.chop!
-              add_sql = "ALTER TABLE #{DATABASE_NAME}.#{tab_desc.shadow_name}#{add_list}"
-              puts add_sql
+              add_sql = tab_desc.alter_table_sql( new_fields, &add_syntax )
               $dbh.query( add_sql )
             end
             # drop removed fields
             drop_fields = $tables[ix_sh].extra_fields( tab_desc )
             if ! drop_fields.empty?
-              puts "drop"
-              p drop_fields
-              regenerate_triggers = true
-              drop_names = drop_fields.collect{|item| " DROP COLUMN #{item[0]},"}
-              drop_list = drop_names.join
-              drop_list.chop!
-              drop_sql = "ALTER TABLE #{DATABASE_NAME}.#{tab_desc.shadow_name}#{drop_list}"
-              puts drop_sql
+              drop_sql = tab_desc.alter_table_sql( drop_fields, &drop_syntax )
               $dbh.query( drop_sql )
             end
-            # alter modified types
+            # alter modified field types
             modify_fields = tab_desc.modified_fields( $tables[ix_sh] )
             if ! modify_fields.empty?
-              puts "modify"
-              p modify_fields
-              modify_names = new_fields.collect{|item| " MODIFY COLUMN #{item[0]} #{item[1]},"}
-              modify_list = modify_names.join
-              modify_list.chop!
-              modify_sql = "ALTER TABLE #{DATABASE_NAME}.#{tab_desc.shadow_name}#{modify_list}"
-              puts modify_sql
+              modify_sql = tab_desc.alter_table_sql( modify_fields, &modify_syntax )
               $dbh.query( modify_sql )
             end
-            # recreate triggers
-            if regenerate_triggers
-              puts "regenerate triggers"
+            if (( ! new_fields.empty? ) || ( ! drop_fields.empty? ))
+              # then fields were added and/or dropped
+              log_it "regenerate triggers"
               generate_triggers( tab_desc )
             end
           end
         else
-          # there is no shadow, create it now
+          # there is no shadow for this table, create it now
           log_it " create #{tab_desc.shadow_name}"
           create_statement  = "CREATE TABLE #{DATABASE_NAME}.#{tab_desc.shadow_name} ("
           create_statement += tab_desc.create_fields + " )"
-#          puts create_statement
           $dbh.query( create_statement )
 
           # todo - we might want to create an index someday
 
+          # also generate the triggers to update the new shadow table
           generate_triggers( tab_desc )
         end
       else
+        # we skip shadow tables and tables that can not have a shadow
         if tab_desc.shadow?
           log_it "table #{tab_desc.table_name} is a shadow table"
         else
@@ -288,3 +315,4 @@ end
     # disconnect from server
     $dbh.close if $dbh
   end
+# end of script
