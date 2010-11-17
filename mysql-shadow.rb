@@ -2,27 +2,134 @@
 
   # require "rubygems"
   # export RUBYOPT=rubygems in .bashrc, else require "rubygems"
-  require "mysql"
+  require 'mysql'
   # todo - use these
-  require "logger"
-  require "optparse"      # more ruby-ish than getoptlong
+  require 'logger'
+  require 'optparse'      # more ruby-ish than getoptlong
+  require 'ostruct'       # to create a flexible option structure
 
   # For now the focus is on developing shadow table tools for use with the MySql database.
   # The sql generated is MySql-specific.
   # Therefore we use the MySql driver, and skip the DBI abstraction.
 
-  # a shadow table name matches this pattern
-  SHADOW_PATTERN = /(.+)_shadow$/i
-  SHADOW_SUFFIX = "_shadow"
-  
-  # these fields must be present to shadow a table
-  # we assume that a type check is not needed
-  ID_NAME = "id"
-  UPDATE_NAME = "updated_at"
+# file = File.open('foo.log', File::WRONLY | File::APPEND)
+# log.level = Logger::WARN
+# 0 FATAL an unhandleable error that results in a program crash
+# 1 ERROR a handleable error condition
+# 2 WARN a warning
+# 3 INFO generic (useful) information about system operation
+# 4 DEBUG low-level information for developers
 
-  # The database we are working in
-  # This is all we need to change to work on another database
-  DATABASE_NAME = "enjyn_qa"
+# these fields must be present to shadow a table
+# we assume that a type check is not needed
+ID_NAME = "id"
+UPDATE_NAME = "updated_at"
+
+# set default option names to use
+SHADOW_SUFFIX = "_shadow"
+DEFAULT_LOGFILE = 'mysql-shadow.log'
+
+  # handle command line arguments and defaults
+  class CmdOptions
+
+    # return a structure containing the option settings
+    def self.parse(args)
+
+      # The options specified on the command line are collected in *options*.
+      # We set default values here.
+      options = OpenStruct.new
+
+      # - database connection info
+      options.user = 'root'
+      options.password = '' # mandatory
+      options.schema = ''   # mandatory
+      options.host = 'localhost'
+
+      # - logging info and verbosity
+      options.logfile =  DEFAULT_LOGFILE
+      options.loglevel = 'info'
+
+      # - a test mode switch, that is show what we would do
+      options.testmode = false
+
+      # - a different shadow table name pattern
+      options.shadow_suffix = SHADOW_SUFFIX
+
+      opts = OptionParser.new do |opts|
+
+        opts.banner = "Usage: mysql-shadow.rb -d DATABASE -p PASSWORD [-cfhstuv]"
+
+        opts.separator ""
+        opts.separator "Database connection:"
+
+        opts.on("-c", "--connect [HOSTNAME]",
+                "The server connection (default=#{options.host})") do |hn|
+          options.host = hn || ''
+        end
+
+        opts.on("-u", "--user [USER]",
+                "The user account (default=#{options.user})") do |usr|
+          options.user = usr || ''
+        end
+
+        opts.on("-p", "--password PASSWORD",
+                "The account password (REQUIRED)") do |pwd|
+          options.password = pwd || ''
+        end
+
+        opts.on("-d", "--database SCHEMA",
+                "The database schema to shadow (REQUIRED)") do |sch|
+          options.schema = sch || ''
+        end
+
+        opts.separator ""
+        opts.separator "Logging options:"
+
+        opts.on("-f", "--file [LOGFILE]",
+                "The log file name (default=#{options.logfile})") do |lf|
+          options.logfile = lf || DEFAULT_LOGFILE
+        end
+
+        # Optional argument with keyword completion.
+        opts.on("-v", "--verbosity [LEVEL]", [:fatal, :error, :warn, :info, :debug],
+                "The log verbosity level (default=#{options.loglevel} [fatal,error,warn,info,debug])") do |lev|
+          options.loglevel = lev || :debug
+        end
+
+        opts.separator ""
+        opts.separator "Other options:"
+        
+        # - test mode boolean switch, if true then just show what we would do
+        opts.on("-t", "--[no-]test", "Test mode, just show what we would do (default=#{options.testmode}) ") do |tm|
+          options.testmode = tm || false
+        end
+
+        # - a different shadow table name suffix
+        opts.on("-s", "--shadow_suffix [SUFFIX]",
+                "The table name suffix that denotes a shadow table (default=#{options.shadow_suffix})") do |ss|
+          options.shadow_suffix = ss || SHADOW_SUFFIX
+        end
+
+        # print the options summary and exit
+        opts.on_tail("-h", "--help", "Show this message") do
+          puts opts
+          exit
+        end
+
+      end
+      # having defined the parser, use it
+      opts.parse!(args)
+      
+      # verify that we have the required values, if not show usage and exit
+      if ( options.schema == '' || options.password == '' )
+        puts opts
+        exit
+      end
+
+      # return the results
+      options
+    end # end parse()
+  end # class CmdOptions
 
 # logging interface
 # todo - implement verbosity level, log destination
@@ -67,7 +174,7 @@ class TableDescription
   def initialize( table_name )
     @table_name = table_name
     # see if this table name matches the shadow table name pattern
-    @shadow_match = SHADOW_PATTERN.match( table_name )
+    @shadow_match = $shadow_pattern.match( table_name )
     if @shadow_match
       # then this is a shadow table
       # base_name is name of the table the shadow table is following
@@ -134,7 +241,7 @@ class TableDescription
     end
     # we now know enough to create the shadow name (or not)
     if can_shadow?
-      @shadow_name = @base_name + SHADOW_SUFFIX
+      @shadow_name = @base_name + $options.shadow_suffix
     else
       # there will not be a shadow table
       @shadow_name = nil
@@ -177,9 +284,9 @@ class TableDescription
   end
   # common part of the create trigger body
   def trigger_body( event )
-    trigger_statement  = "CREATE TRIGGER #{DATABASE_NAME}.#{base_name}_#{event} "
-    trigger_statement += "AFTER #{event.upcase} ON #{DATABASE_NAME}.#{base_name} FOR EACH ROW "
-    trigger_statement += "INSERT INTO #{DATABASE_NAME}.#{shadow_name} ("
+    trigger_statement  = "CREATE TRIGGER #{$options.schema}.#{base_name}_#{event} "
+    trigger_statement += "AFTER #{event.upcase} ON #{$options.schema}.#{base_name} FOR EACH ROW "
+    trigger_statement += "INSERT INTO #{$options.schema}.#{shadow_name} ("
     trigger_statement += field_list + " ) VALUES ("
     trigger_statement += new_list + " )"
     return trigger_statement
@@ -198,7 +305,7 @@ class TableDescription
   # common drop trigger portion
   # note this query does nothing and does not throw an error if the trigger does not exist
   def drop_trigger_sql( event )
-    "DROP TRIGGER IF EXISTS #{DATABASE_NAME}.#{base_name}_#{event}"
+    "DROP TRIGGER IF EXISTS #{$options.schema}.#{base_name}_#{event}"
   end
   # end of drop trigger section
   #
@@ -212,14 +319,14 @@ class TableDescription
     field_text = field_list.join
     # remove the final comma
     field_text.chop!
-    return "ALTER TABLE #{DATABASE_NAME}.#{shadow_name}#{field_text}"
+    return "ALTER TABLE #{$options.schema}.#{shadow_name}#{field_text}"
   end
   # end of alter table section
   #
   # -- create table section
   # generate a create table command for the shadow table of this table
   def create_table_sql()
-    "CREATE TABLE #{DATABASE_NAME}.#{shadow_name} (" + create_fields + " )"
+    "CREATE TABLE #{$options.schema}.#{shadow_name} (" + create_fields + " )"
   end
   # end of create table section
 end
@@ -235,24 +342,34 @@ def generate_triggers( tab_desc )
   $dbh.query( tab_desc.update_trigger_sql )
 end
 # this is the main portion of the script
+
+$dbh = nil
+
   begin
     # process the command line options
     # we can accept
     # - database connection info
     # - logging info and verbosity
-    # - a test mode switch, that is show what we would do
+    # - a test mode switch, that is just show what we would do
     # - a different shadow table name pattern
-    #
+
+    $options = CmdOptions.parse(ARGV)
+    p $options # for test
+    # todo - implement test mode
+
+    # a shadow table name matches this pattern
+    $shadow_pattern = /(.+)#{$options.shadow_suffix}$/i
+
     # connect to the MySQL server
-    #           host, user, password, database
-    # todo - read database and other configuration from an external file or command line
-    $dbh = Mysql.real_connect("localhost", "root", "3njyn42", DATABASE_NAME )
-    # get server version string and display it
+    $dbh = Mysql.real_connect( $options.host, $options.user, $options.password, $options.schema )
+
     log_it "Server version: " + $dbh.get_server_info
-    $tables = []
+
     # get the names of all tables in this database
     tablist = $dbh.list_tables
+
     # build the descriptions of all the tables
+    $tables = []
     tablist.each do |table|
       $tables << TableDescription.new( table )
     end
