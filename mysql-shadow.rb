@@ -2,30 +2,21 @@
 
   # require "rubygems"
   # export RUBYOPT=rubygems in .bashrc, else require "rubygems"
-  require 'mysql'
-  # todo - use these
-  require 'logger'
-  require 'optparse'      # more ruby-ish than getoptlong
+  require 'mysql'         # MySQL database interface
+  require 'logger'        # logging interface
+  require 'optparse'      # more ruby-ish command line parser than getoptlong
   require 'ostruct'       # to create a flexible option structure
 
-  # For now the focus is on developing shadow table tools for use with the MySql database.
-  # The sql generated is MySql-specific.
-  # Therefore we use the MySql driver, and skip the DBI abstraction.
-
-# file = File.open('foo.log', File::WRONLY | File::APPEND)
-# log.level = Logger::WARN
-# 0 FATAL an unhandleable error that results in a program crash
-# 1 ERROR a handleable error condition
-# 2 WARN a warning
-# 3 INFO generic (useful) information about system operation
-# 4 DEBUG low-level information for developers
+  # For now the focus is on developing shadow table tools for use with the MySQL database.
+  # The sql generated is MySQL-specific.
+  # Therefore we use the MySQL driver, and skip the DBI abstraction.
 
 # these fields must be present to shadow a table
 # we assume that a type check is not needed
 ID_NAME = "id"
 UPDATE_NAME = "updated_at"
 
-# set default option names to use
+# set default option strings to use
 SHADOW_SUFFIX = "_shadow"
 DEFAULT_LOGFILE = 'mysql-shadow.log'
 
@@ -104,7 +95,7 @@ DEFAULT_LOGFILE = 'mysql-shadow.log'
           options.testmode = tm || false
         end
 
-        # - a different shadow table name suffix
+        # - allow a different shadow table name suffix
         opts.on("-s", "--shadow_suffix [SUFFIX]",
                 "The table name suffix that denotes a shadow table (default=#{options.shadow_suffix})") do |ss|
           options.shadow_suffix = ss || SHADOW_SUFFIX
@@ -131,19 +122,10 @@ DEFAULT_LOGFILE = 'mysql-shadow.log'
     end # end parse()
   end # class CmdOptions
 
-# logging interface
-# todo - implement verbosity level, log destination
-def log_it( msg, verbosity=0 )
-  if verbosity >= 0
-    puts msg
-    # good enough for now
-  end
-end
-
-# A TableDescription knows about one table in the current database.
+# A TableDescription knows about one table in the current database schema.
 # It can tell if a table is a shadow or if it can be shadowed.
 # It can supply formatted strings describing the fields in the form needed
-# for creation of the table or related triggers.
+# for creation or alteration of the table or related triggers.
 # It can be used to find added, dropped, or modified fields.
 class TableDescription
   # the name of this table
@@ -331,31 +313,72 @@ class TableDescription
   # end of create table section
 end
 # end of the table description class
+
+# log level translation to logger class constant
+def log_level
+  case $options.loglevel
+    when "fatal"
+      # FATAL an unhandleable error that results in a program crash
+      Logger::FATAL
+    when "error"
+      # ERROR a handleable error condition
+      Logger::ERROR
+    when "warn"
+      # WARN a warning
+      Logger::WARN
+    when "info"
+      # INFO generic (useful) information about system operation
+      Logger::INFO
+    when "debug"
+      # DEBUG low-level information for developers
+      Logger::DEBUG
+    else
+      Logger::DEBUG
+  end
+end
+
+# wrapper on sql execution to implement test mode
+def exec_sql( statement )
+  $logger.debug( statement )
+  $dbh.query( statement ) unless $options.testmode
+end
 #
 # common trigger generation mechanism
-# only used for non-shadow tables
+#  (only used for tables being shadowed)
 def generate_triggers( tab_desc )
-  $dbh.query( tab_desc.drop_insert_sql )
-  $dbh.query( tab_desc.insert_trigger_sql )
+  exec_sql( tab_desc.drop_insert_sql )
+  exec_sql( tab_desc.insert_trigger_sql )
 
-  $dbh.query( tab_desc.drop_update_sql )
-  $dbh.query( tab_desc.update_trigger_sql )
+  exec_sql( tab_desc.drop_update_sql )
+  exec_sql( tab_desc.update_trigger_sql )
 end
-# this is the main portion of the script
 
+#--- this is the main portion of the script ---
+
+# our database connection
 $dbh = nil
+# our log object
+$logger = nil
 
   begin
     # process the command line options
-    # we can accept
-    # - database connection info
+    # we can accept:
+    # - database connection info - schema and password are required
     # - logging info and verbosity
-    # - a test mode switch, that is just show what we would do
+    # - a test mode switch, if true we just show what we would do
     # - a different shadow table name pattern
-
     $options = CmdOptions.parse(ARGV)
-    p $options # for test
-    # todo - implement test mode
+
+    # start logging
+    logfile = File.open( $options.logfile, "a" )
+    $logger = Logger.new( logfile )
+    $logger.level = log_level()
+    $logger.warn "-- starting new run of mysql-shadow --"
+    
+    # document the option settings
+    $logger.debug $options
+    # indicate if we are in test mode
+    $logger.warn "running in test mode, no changes will be made" if $options.testmode
 
     # a shadow table name matches this pattern
     $shadow_pattern = /(.+)#{$options.shadow_suffix}$/i
@@ -363,19 +386,19 @@ $dbh = nil
     # connect to the MySQL server
     $dbh = Mysql.real_connect( $options.host, $options.user, $options.password, $options.schema )
 
-    log_it "Server version: " + $dbh.get_server_info
+    $logger.debug "Server version: " + $dbh.get_server_info
 
-    # get the names of all tables in this database
+    # get the names of all tables in this database schema
     tablist = $dbh.list_tables
 
-    # build the descriptions of all the tables
+    # build the descriptions of all these tables
     $tables = []
     tablist.each do |table|
       $tables << TableDescription.new( table )
     end
     #
-    # helper procedures the contain the column syntax needed for alter table operations
-    # item is a field hash entry supplied as an array,
+    # helpers that hold the column syntax needed for alter-table-command generation
+    # item is a field hash entry, supplied as a two-element array,
     # item[0] is the key (the field name), item[1] is the value (the field type)
     add_syntax = Proc.new {|item| " ADD COLUMN #{item[0]} #{item[1]},"}
     drop_syntax = Proc.new {|item| " DROP COLUMN #{item[0]},"}
@@ -384,69 +407,71 @@ $dbh = nil
     # - do shadow maintenance - update existing shadow tables that do not match base table
     # - do shadow creation - create shadow tables that do not exist now
     $tables.each do |tab_desc|
+      $logger.debug "checking table #{tab_desc.table_name}"
       if tab_desc.can_shadow?
-        # This table should have a shadow table.
+        $logger.debug "table #{tab_desc.table_name} can have a shadow"
         # find the index of the corresponding shadow table if it exists
         ix_sh = $tables.index{ |item| item.table_name == tab_desc.shadow_name }
         if ix_sh
-          # a shadow table exists now, see if it needs to be revised
-          log_it " table #{tab_desc.table_name} has shadow at #{ix_sh}, #{$tables[ix_sh].table_name}"
-          # we need an update if the shadow table description does not match
-          need_update = ! ( tab_desc.unchanged?( $tables[ix_sh] ) )
-          if need_update
-            log_it " shadow table #{$tables[ix_sh].table_name} needs an update"
+          $logger.info "table #{tab_desc.table_name} has a shadow"
+          $logger.debug "table #{tab_desc.table_name} shadow index is #{ix_sh}"
+
+          if ! ( tab_desc.unchanged?( $tables[ix_sh] ) )
+            $logger.warn "shadow table #{$tables[ix_sh].table_name} needs an update"
             # it seems simpler and safer to treat add, drop, and modify as separate problems
             # since in most cases only one type will be needed for any table
-            # add new fields
+
             new_fields = tab_desc.extra_fields( $tables[ix_sh] )
             if ! new_fields.empty?
-              add_sql = tab_desc.alter_table_sql( new_fields, &add_syntax )
-              $dbh.query( add_sql )
+              $logger.info "adding fields to shadow table #{$tables[ix_sh].table_name}"
+              exec_sql( tab_desc.alter_table_sql( new_fields, &add_syntax ) )
             end
-            # drop removed fields
+
             drop_fields = $tables[ix_sh].extra_fields( tab_desc )
             if ! drop_fields.empty?
-              drop_sql = tab_desc.alter_table_sql( drop_fields, &drop_syntax )
-              $dbh.query( drop_sql )
+              $logger.info "dropping fields from shadow table #{$tables[ix_sh].table_name}"
+              exec_sql( tab_desc.alter_table_sql( drop_fields, &drop_syntax ) )
             end
-            # alter modified field types
+
             modify_fields = tab_desc.modified_fields( $tables[ix_sh] )
             if ! modify_fields.empty?
-              modify_sql = tab_desc.alter_table_sql( modify_fields, &modify_syntax )
-              $dbh.query( modify_sql )
+              $logger.info "modifying field types in shadow table #{$tables[ix_sh].table_name}"
+              exec_sql( tab_desc.alter_table_sql( modify_fields, &modify_syntax ) )
             end
+
             if (( ! new_fields.empty? ) || ( ! drop_fields.empty? ))
               # then fields were added and/or dropped
-              log_it "regenerate triggers"
+              $logger.info "regenerate triggers on #{tab_desc.base_name}"
               generate_triggers( tab_desc )
             end
           end # end of need an update of the shadow table
         else
-          # there is no shadow for this table, create it now
-          log_it " create #{tab_desc.shadow_name}"
+          $logger.warn "create new shadow table #{tab_desc.shadow_name}"
           create_statement = tab_desc.create_table_sql()
-          $dbh.query( create_statement )
+          exec_sql( create_statement )
 
           # todo - we might want to create an index someday
 
-          # also generate the triggers to update the new shadow table
+          $logger.info "generate triggers on #{tab_desc.base_name}"
           generate_triggers( tab_desc )
         end
       else
-        # we skip shadow tables and tables that can not have a shadow
+        # skip existing shadow tables and tables that can not have a shadow
         if tab_desc.shadow?
-          log_it "table #{tab_desc.table_name} is a shadow table"
+          $logger.info "table #{tab_desc.table_name} is a shadow table"
         else
-          log_it "skipping table #{tab_desc.table_name}, can not shadow"
+          $logger.warn "skipping table #{tab_desc.table_name}, can not shadow it"
         end
       end
     end
   rescue Mysql::Error => e
-    log_it "Error code: #{e.errno}"
-    log_it "Error message: #{e.error}"
-    log_it "Error SQLSTATE: #{e.sqlstate}" if e.respond_to?("sqlstate")
+    $logger.fatal "Error code: #{e.errno}"
+    $logger.fatal "Error message: #{e.error}"
+    $logger.fatal "Error SQLSTATE: #{e.sqlstate}" if e.respond_to?("sqlstate")
   ensure
     # disconnect from server
     $dbh.close if $dbh
+    # and close the log
+    $logger.close if $logger
   end
 # end of script
