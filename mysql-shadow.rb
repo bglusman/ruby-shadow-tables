@@ -373,7 +373,7 @@ $logger = nil
     logfile = File.open( $options.logfile, "a" )
     $logger = Logger.new( logfile )
     $logger.level = log_level()
-    $logger.warn "-- starting new run of mysql-shadow --"
+    $logger.warn "-- starting new run of mysql-shadow in #{$options.schema} --"
     
     # document the option settings
     $logger.debug $options
