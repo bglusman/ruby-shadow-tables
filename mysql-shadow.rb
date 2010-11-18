@@ -317,19 +317,19 @@ end
 # log level translation to logger class constant
 def log_level
   case $options.loglevel
-    when "fatal"
+    when "fatal", :fatal
       # FATAL an unhandleable error that results in a program crash
       Logger::FATAL
-    when "error"
+    when "error", :error
       # ERROR a handleable error condition
       Logger::ERROR
-    when "warn"
+    when "warn", :warn
       # WARN a warning
       Logger::WARN
-    when "info"
+    when "info", :info
       # INFO generic (useful) information about system operation
       Logger::INFO
-    when "debug"
+    when "debug", :debug
       # DEBUG low-level information for developers
       Logger::DEBUG
     else
