@@ -423,32 +423,31 @@ $logger = nil
 
             new_fields = tab_desc.extra_fields( $tables[ix_sh] )
             if ! new_fields.empty?
-              $logger.info "adding fields to shadow table #{$tables[ix_sh].table_name}"
+              $logger.info "adding #{new_fields.length} field(s) to shadow table #{$tables[ix_sh].table_name}"
               exec_sql( tab_desc.alter_table_sql( new_fields, &add_syntax ) )
             end
 
             drop_fields = $tables[ix_sh].extra_fields( tab_desc )
             if ! drop_fields.empty?
-              $logger.info "dropping fields from shadow table #{$tables[ix_sh].table_name}"
+              $logger.info "dropping #{drop_fields.length} field(s) from shadow table #{$tables[ix_sh].table_name}"
               exec_sql( tab_desc.alter_table_sql( drop_fields, &drop_syntax ) )
             end
 
             modify_fields = tab_desc.modified_fields( $tables[ix_sh] )
             if ! modify_fields.empty?
-              $logger.info "modifying field types in shadow table #{$tables[ix_sh].table_name}"
+              $logger.info "modifying #{modify_fields.length} field type(s) in shadow table #{$tables[ix_sh].table_name}"
               exec_sql( tab_desc.alter_table_sql( modify_fields, &modify_syntax ) )
             end
 
             if (( ! new_fields.empty? ) || ( ! drop_fields.empty? ))
-              # then fields were added and/or dropped
+              # then fields were added and/or dropped, so the triggers are obsolete
               $logger.info "regenerate triggers on #{tab_desc.base_name}"
               generate_triggers( tab_desc )
             end
           end # end of need an update of the shadow table
         else
           $logger.warn "create new shadow table #{tab_desc.shadow_name}"
-          create_statement = tab_desc.create_table_sql()
-          exec_sql( create_statement )
+          exec_sql( tab_desc.create_table_sql() )
 
           # todo - we might want to create an index someday
 
@@ -462,8 +461,8 @@ $logger = nil
         else
           $logger.warn "skipping table #{tab_desc.table_name}, can not shadow it"
         end
-      end
-    end
+      end # end of check if a table can have a shadow
+    end # end of shadow table maintenance and creation
   rescue Mysql::Error => e
     $logger.fatal "Error code: #{e.errno}"
     $logger.fatal "Error message: #{e.error}"
@@ -473,5 +472,5 @@ $logger = nil
     $dbh.close if $dbh
     # and close the log
     $logger.close if $logger
-  end
+  end # end of main section
 # end of script
