@@ -1,32 +1,51 @@
-This script creates and maintains shadow tables for a ruby-on-rails application database.
+This Ruby script creates and maintains shadow tables for a Ruby-on-Rails application MySQL database.
+
+== Shadow tables
 
 In many situations a history of changes to a database is a very valuable artifact.
-The shadow table approach to creating history keeps a copy of all versions of each record in a table
+The shadow table approach to history keeps a copy of all versions of each record in a table
 in a second table, the shadow table, that has the same structure as the table being shadowed.
 Each time a record is inserted or updated in the main table,
 a trigger copies the new or changed record to the shadow table.
+Unlike some audit trails, since field types are not changed, data can not be lost.
 
-This approach has the advantage that the history is maintained independently of the rails application.
-The rails application is not aware of the history and can not affect it.
+Another advantage is that the history is maintained independently of the rails application;
+the rails application is not aware of the history and can not affect it.
 The application programmers are not burdened in any way except to avoid creating tables
-with names that match the shadow table name pattern.
-The burden on the database is negligible in most applications.
+with names that match the shadow table suffix pattern (which is _shadow by default).
 
-There is one major limitation to this approach.
-Because the script works by examining the database, it can not distinguish a field that has been
-renamed from the dropping of the old field and the addition of a new field.
+The burden on the database is negligible in most applications;
+the script does not create indexes on the shadow table to help guarantee this.
+
+There is one major limitation to this approach to keeping history.
+Because the script works by examining the database, it can not distinguish a field that has
+been renamed from the dropping of the old field and the addition of a new field.
 The consequence is that history will be lost from fields that are renamed.
 
 Tables created by rails are shadowed if there are fields named "id" and "updated_at".
 If justified, a composite, unique index on the shadow table can be created using these fields.
 
-The script needs to be supplied with database connection information and the name of the schema to shadow.
+If the shadow table is to function as an audit trail, the ruby application design should
+include the identity of the user responsible for the change as a field in the record;
+it is not possible to obtain this information at the database level,
+where the shadow triggers operate.
 
-Shadow tables are created and updated when the script is run.
+== Operation
 
+Shadow tables are created and updated when the script is run. Configuration is by command line options.
+
+Use the -h (or --help) switch for a description of the available options.
+
+The script needs to be given database connection information and the name of the schema to shadow.
+The script will use the default user, root, if no user name is given.
+
+In the schema, the script identifies tables that can be shadowed and detects existing shadow tables.
+The script will maintain the congruence of existing shadow tables with their source table.
 A shadow table is updated if fields are added or dropped or if a field type or size is changed.
+The script will create a new shadow table for any eligible table that is not shadowed.
+Triggers on update and insert are also created and maintained automatically.
 
-There is a command line test mode switch, if set, the script will only show what it would change.
+There is a command line test mode switch (-t); if set, the script will only show what it would change.
 
-A log file is created, the log verbosity level can be selected at the command line.
+A log file is created, the log verbosity level (-v) can be selected at the command line.
 
